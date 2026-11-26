@@ -1,0 +1,1038 @@
+---
+title: "Working with synthetic data"
+author: "Thomas Feliciani"
+date: "November 25, 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: yeti
+---
+
+
+This demo runs in R 4.6.1 and uses three R libraries: _ggplot2_, _lhs_, and _ambient_. If any of these libraries is not installed, you can use _install.packages()_.
+```{r}
+library("ggplot2")
+library("lhs")
+library("ambient")
+```
+
+
+
+## Why would we need to simulate data?
+
+There are different situations where we might need to work on a simulated dataset. For example, simulations are the go-to approach:
+
+* _When we're waiting for data access_. Synthetic data allows us to develop a pipeline for our data analyses even before we start our data collection, or before we gain access to the empirical data that we will use.
+* _For proof-of-concepts_, e.g., to explore edge cases that might not be present in empirical data.
+* _When empirical data cannot be shared_. If ethical or legal limitations prevent us from sharing our data in any form, synthetic data can help make our scripts FAIR (Findable, Accessible, Interoperable, Reusable). By including synthetic data in our shared scripts we can make it easier for reviewers and other users to follow through our code.
+* _In numerical simulations_. Some research methods rely on computer simulations of complex systems (thus, on synthetic data) to explore and develop theory or to make predictions (e.g., agent-based modeling).
+* _For data imputation_. There is a wide class of algorithms that allow researchers to artificially "fill in" missing information in empirical datasets (e.g., incomplete observations) with estimated values. Imputed data is a form of synthetic data.
+
+Regardless of the situation, it is crucial that **synthetic data is clearly labelled as synthetic**: we do not want anyone to mistake our simulated dataset for real-world observations!
+
+
+
+
+## Random seeds
+
+The first thing we need to take care of when simulating data is **reproducibility**. This means ensuring that whoever runs our scripts - our future selves, the reviewer of our paper, our thesis supervisor, a GitHub follower, etc. - gets the *exact same* synthetic dataset that we've created.
+
+This is easy to do: by specifying a seed for the *random number generation* (RNG).
+
+The following function returns a random integer between 1 and 5. Without setting an RNG seed, every time we call it we might get a different number.
+```{r RNG_1, echo=TRUE, message=FALSE, warning=FALSE, results="hold", fig.show="hold"}
+
+sample(x = 5, size = 1)
+sample(x = 5, size = 1)
+sample(x = 5, size = 1)
+
+```
+
+However, by setting an RNG seed (e.g., in this case, the number 123), every call to this function returns the exact same result -- in this case, the number 3.
+
+```{r RNG_2, echo=TRUE, message=FALSE, warning=FALSE, results="hold", fig.show="hold"}
+
+seed <- 123
+set.seed(seed)
+sample(x = 5, size = 1)
+
+set.seed(seed)
+sample(x = 5, size = 1)
+
+set.seed(seed)
+sample(x = 5, size = 1)
+
+```
+
+For this reason, it is good practice to define an RNG seed at the start of scripts where we will be generating random distributions. 
+In this document, the RNG seed is defined here and reset at the start of every chunk code.
+
+***Caveat***: a different version of R might use a different RNG algorithm than yours. For the most consistent results, remember to report the version of R you are using. I usually do at the top of my scripts, pretty much like I did on this page.
+
+
+
+## Generating variables: a straightforward approach.
+
+Sometimes, all we need for our synthetic dataset is a collection of variables that are uncorrelated from one another. Here is a straightforward approach to creating such variables, showing different variable types.
+We are going to create a dataset that describes people. For each person / observation we will define their city, gender, age, height, education, and income.
+
+
+### Categorical variables
+
+For categorical variables (e.g., occupation, favorite color, etc.) we can simply use the "sample" function to draw from a predetermined set of valid values. In this example, notice how the _prob_ parameter is left commented. If _prob_ is not specified, the values will be chosen at random uniform from _x_. Parameter _prob_ helps in cases where we need some values to be more common than others, or in cases where we need the sampling to follow a specific distribution.
+
+```{r naive_1}
+set.seed(123)
+
+sampleSize = 1000
+
+city <- as.factor(sample(
+  x = c("Coimbra", "Lisbon", "Porto"), # Valid values
+  #prob = c(156, 549, 249), # Probability weights, e.g. based on observed frequencies
+  size = sampleSize, # How many observations we need
+  replace = TRUE # Do we allow the same value to be appear more than once?
+))
+
+table(city)
+
+```
+
+
+### Logical variables
+
+These are the ones that can either be TRUE or FALSE. The most straightforward approach is to use _sample_ again:
+
+```{r naive_2}
+set.seed(123)
+
+man <- sample(
+  x = c(TRUE, FALSE),
+  size = sampleSize,
+  prob = c(0.8, 0.2), # Probability weights
+  replace = TRUE
+)
+
+table(man)
+
+```
+
+### Numeric variables: uniform and normal distributions
+
+How we generate a numeric variable depends on the kind of distribution we want to model.
+
+In many cases, a uniform distribution or a normal distribution will do.
+
+<span style="color: #32a852;">**Question:** How plausible is this age distribution?</span>
+
+```{r naive_3, results="hold", fig.show = "hold", out.width = "50%"}
+set.seed(123)
+
+# For a uniform distribution, we need to specify the range (min, max)
+age <- runif(
+  n = sampleSize,
+  min = 1,
+  max = 120
+)
+hist(age, breaks = 10)
+
+# For a normal distribution, we need to specify the mean and standard deviation
+age <- rnorm(
+  n = sampleSize,
+  mean = 45,
+  sd = 20
+)
+hist(age, breaks = 10)
+
+```
+
+There are a few things to keep in mind when creating numeric variables One is whether we need it to be an integer variable (i.e., whole numbers). For example, _age_ is often coded as an integer number, e.g., of years. Since functions _runif_ and _rnorm_ have given us floating points, we need to convert them into integers. To convert _age_ into an integer, the easiest approach is to _round_ the values.
+
+```{r naive_4}
+
+# Rounding:
+age <- round(age)
+
+```
+
+A second thing to keep in mind is that, when we sample from a normal distribution as we did with _rnorm_, we may get values that are outside of what would be a meaningful range.
+In this example, we have generated some negative values for age, but age should not admit negative values (and, usually, it only takes values greater than zero). We can fix this by simply recoding these invalid cases:
+
+```{r naive_5}
+
+# Counting how many observations we have given a null or negative age value to.
+table(age <= 0)
+
+# Finding which is the observation with an invalid age value:
+whichAgeToRecode <- which(age <= 0)
+
+# Recoding the invalid case. We replace the invalid value with a value of 1 (year of age).
+age[whichAgeToRecode] <- 1
+
+```
+
+
+### Numeric variables: the beta distribution
+
+The beta distribution is a powerful ally for creating synthetic data. It naturally ranges in [0,1], which ensures we won't need to recode values that are outside of our intended range. And the shape of the distribution is determined by two parameters, alpha and beta, which R calls _shape1_ and _shape2_.
+Here is a quick overview of what this distribution allows us to do:
+
+
+```{r naive_6, results="hold"}
+set.seed(123)
+
+height <- rbeta(
+  n = sampleSize,
+  shape1 = 3,
+  shape2 = 3
+)
+hist(height, main = "alpha = 3 and beta = 3")
+
+
+```
+
+The range of beta distributions, [0,1], makes it easy to convert the variables we created to meaningful ranges. For example, say that we allow _height_ to range between 40 and 210cm:
+
+```{r naive_7}
+
+height <- height * (210 - 40) + 40
+
+```
+
+
+<span style="color: #32a852;">**Task**. Play around with the two parameters of _rbeta()_ by trying out combinations of values between 0 and 1, equal to 1, and greater than 1. Can you obtain distributions other than the symmetric, bell-shaped example above?</span>
+
+
+```{r naive_8, echo=FALSE,  fig.show = "hold", out.width = "50%"}
+set.seed(123)
+
+# As we've seen above, when shape1 and shape2 are set to values higher than 1, the
+# distribution will be monotonic (i.e., single-peaked):
+x <- rbeta(
+  n = sampleSize,
+  shape1 = 3,
+  shape2 = 3
+)
+hist(x)
+
+# We can skew the distribution left or right by setting shape1 or shape2 to a higher value
+x <- rbeta(
+  n = sampleSize,
+  shape1 = 3,
+  shape2 = 6 # 
+)
+hist(x)
+
+# If we set shape1 and shape2 to values between 0 and 1, we get a bimodal distribution:
+x <- rbeta(
+  n = sampleSize,
+  shape1 = 0.7,
+  shape2 = 0.7
+)
+hist(x)
+
+
+# Setting the two paramaters respectively to 1 and 2 yields a triangular distribution.
+x <- rbeta(
+  n = sampleSize,
+  shape1 = 1,
+  shape2 = 2
+)
+hist(x)
+
+
+```
+
+
+
+### Bundling all variables into our new synthetic dataset
+
+We have all we need to put together our dataset.
+In most cases, we do not need to write our dataset to file, as our script allows us to generate the same dataset very easily upon need. In case we do need to save the dataset, this next code snipped shows how.
+
+```{r naive_9}
+set.seed(123)
+
+synthData <- as.data.frame(cbind(
+  id = 1:sampleSize, # adding an integer that can serve as ID variable
+  city = city,
+  man = man,
+  height = rbeta(n = sampleSize, shape1 = 3, shape2 = 3) * 170 + 40,
+  income = rbeta(n = sampleSize, shape1 = 3, shape2 = 6) * 5000
+))
+
+# Creating a data folder if one doesn't yet exist:
+if (!dir.exists("./SyntheticData/")) dir.create("./SyntheticData/")
+
+# Saving to csv is the most interoperable and human-readable option. But not the most efficient in terms of disk volume.
+write.csv(
+  synthData,
+  file = "./SyntheticData/synthData.csv",
+  row.names = FALSE
+)
+
+# Alternatively, we can save in the more efficient (but less interoperable) RData format:
+save(
+  synthData,
+  file = "./SyntheticData/synthData.RData"
+)
+
+# Removing all objects from the environment.
+rm(list = ls())
+
+```
+
+To read back these files we can use these commands, depending on the format we chose:
+
+```{r naive_10}
+# For csv:
+synthData <- read.csv("./SyntheticData/synthData.csv")
+
+# For RData:
+load("./SyntheticData/synthData.RData")
+
+```
+
+
+
+
+
+## Increasing realism
+
+
+The dataset we've created so far may be sufficient for some uses. However, for some purposes such as the simulation of meta-analyses, a more realistic-looking dataset would be more useful.
+
+Two obvious ways to increase realism is to create variables that are correlated (rather than independent), and to add missing data.
+
+
+### Correlating variables
+
+Let's begin by setting up a new dataframe, starting with something familiar:
+
+
+```{r realistic_model_1}
+
+seed <- 12345
+set.seed(123)
+
+sampleSize = 1e4
+
+
+synthData <- data.frame(
+  id = 1:sampleSize,
+  age = round(rbeta(
+    n = sampleSize, 
+    shape1 = 3, 
+    shape2 = 6
+  ) * 120),
+  man = sample(
+    x = c(TRUE, FALSE), 
+    size = sampleSize, 
+    replace = TRUE
+  ),
+  city = as.factor(sample(
+    x = c("Coimbra", "Lisbon", "Porto"), 
+    prob = c(156, 549, 249), # based on actual population sizes, x1000 inhabitants
+    size = sampleSize, 
+    replace = TRUE
+  ))
+) 
+
+
+```
+
+
+Now, let's add a new variable, _education_, accounting for the fact that a person's education is influenced by their age. Intuitively, kids are on average less educated than adolescents, and adolescents less than adults. Let's assume that there is a positive, linear relationship between age and education.
+
+With _transform_ we can easily create a new education variable with the required specs. We can specify a coefficient - in this case, 0.6 - that defines the slope of the relationship between age and education. Also notice the error term we introduce via  _rnorm_ .
+
+
+```{r realistic_model_2}
+synthData <- transform(
+  synthData,
+  education = 0.6 * age + rnorm(sampleSize, mean = 0, sd = 20)
+)
+
+```
+
+
+
+We should be able to estimate the coefficient 0.6 by fitting a linear model with education as dependent variable and age as independent variable:
+
+```{r realistic_model_3, results="hold", fig.show="hold"}
+fit <- lm(data = synthData, formula = education ~ age)
+summary(fit)
+
+plot(synthData$age, synthData$education, cex = 0.1)
+abline(fit, lwd = 2)
+#Age and education are indeed correlated.
+```
+
+
+
+
+Next, let's add a new variable for a more complex model. Let's define income as being influenced by a person's age, education, and gender. Let's use coefficients that make intuitive sense (e.g., 1 year of age translates to 50€ average increase in income). Let's not forget to add an intercept (e.g., 1200), and an error term using _rnorm_.
+
+```{r realistic_model_4, results="hold", fig.show="hold"}
+synthData <- transform(
+  synthData,
+  income = 
+    1200 +
+    50 * age + 
+    20 * education +  
+    500 * man + 
+    rnorm(sampleSize, mean = 0, sd = 1000)
+)
+```
+
+We can now fit a linear model to predict income. Let's add _city_ as independent variable: we have not used _city_ information to determine income, so the city should have no effect.
+
+```{r realistic_model_5}
+summary(lm(
+  data = synthData, 
+  formula = income ~ age + education + man + city
+))
+
+
+```
+
+Regression coefficient closely track what we baked into the dataset. As expected, _city_ has no bearing on income.
+
+
+
+
+### Adding missing data
+
+Real-world data is imperfect, and some observations may be incomplete. Incomplete observations may be important to replicate in a synthetic dataset: for example, if we are using synthetic data to develop our analyses, missing data allows us to  test if our pipeline is robust to those NAs that will inevitably populate the empirical dataset.
+
+Fortunately, recoding values as missing is much easier than imputing missing values :)
+
+We write a short loop to browse the dataframe column by column, replacing a random 1% of values with NA. We skip the first column, synthData$id, since the IDs of the observations will never be missing.
+
+
+```{r realistic_model_6}
+set.seed(123)
+
+# For each variable, skipping the first one ...
+for (variable in 2:ncol(synthData)) {
+  
+  # We toss a coin as many time as there are observations (heads have a 1% probability)
+  toRecodeAsMissing <- sample(
+    x = c(TRUE, FALSE),
+    prob = c(1, 99),
+    size = sampleSize,
+    replace = TRUE
+  )
+  
+  # Recoding those 'heads' as NA
+  synthData[toRecodeAsMissing, variable] <- NA
+}
+  
+```
+
+
+Now, we can fit the model again. The estimates will be based on a lower N, since we have fewer complete observations.
+
+```{r realistic_model_7, results="hold", fig.show="hold"}
+fit <- lm(
+  data = synthData, 
+  formula = income ~ age + education + man + city
+)
+summary(fit)
+nobs(fit)
+```
+
+
+
+
+## Monte Carlo (re)sampling
+
+Our synthetic dataset now has 10k observations with variables that follow known distributions. This is enough data to simulate how well would some underpowered studies estimate the impact of age, education and gender on income.
+
+Simulating research projects by taking repeated samples from a population - in our case, our 10k simulated people - is a type of Monte Carlo simulations.
+
+Let's simulate 10 teams of researchers who study the predictors of income in our population. Let's assume that, for their studies, these researchers can only collect data on 20 individuals. What coefficients would they predict? 
+
+```{r mc_1, results="hold", fig.show="hold"}
+set.seed(123)
+
+numStudies <- 10 
+sizeOfSubsamples <- 20
+
+# For each of these studies...
+results <- replicate(
+  n = numStudies, 
+  
+  # ... we do the following:...
+  expr = { 
+    
+    #... first, we roll a dice to determine which observations will be included in the study:
+    observationsToInclude <- sample(
+      x = sampleSize, # Population size
+      size = sizeOfSubsamples, # Study sample size
+      replace = FALSE # Each observation can only be chosen max once.
+    )
+    
+    studySample <- synthData[observationsToInclude, ]
+    
+    lm(data = studySample, formula = income ~ age + education + man)
+  },
+  simplify = FALSE
+)
+
+# Extracting the estimated coefficients into a table:
+coefficientMatrix <- do.call(rbind, lapply(results, coef))
+
+# Let's see what the 10 studies predicted:
+print(coefficientMatrix)
+
+# And these are the resulting estimates, averaged across all 10 studies:
+print("Average estimates")
+round(colMeans(coefficientMatrix), digits = 3)
+print("s.d. of estimates")
+round(apply(X = coefficientMatrix, MARGIN = 2, FUN = sd), digits = 3)
+
+
+```
+
+
+We see that individual studies would do rather poorly, though together they get much closer to the ground truth.
+
+<span style="color: #32a852;">**Task**. What can researchers do to get more reliable estimates?</span>
+
+
+## Search space coverage
+
+In some situations, we may need to ensure that our observations cover many - or even all - of the possible combinations of values across our variables (let's call this the '_search space_'). This may become important, for example, when we're generating a test dataset to test our workflow or pipeline, and we want to ensure that all edge cases appear in the test data.
+
+The random sampling approaches we've explored so far do not generally guarantee an even - let alone complete - coverage of the search space.
+
+### Factorial approach
+
+The function _expand.grid()_ offers a straightforward way of ensuring that all combinations will appear in our synthetic data.
+
+```{r factorial}
+
+synthData <- expand.grid(
+  age = c("17 or younger", "18 to 25" , "26 to 35", "36 and older"),
+  universityDegree = c(TRUE, FALSE),
+  city = c("Coimbra", "Lisbon", "Porto")
+)
+
+# Let's see the first 10 lines of the object we've created:
+print(synthData)
+
+# Beware: some observation may consist of illogical variable combinations :)
+
+```
+
+This approach is quick and effective, but it is not always viable. If we are working with many variables, or if some of our variables have many valid values (e.g., numeric variables), the total number of combinations can easily become unmanageable.
+
+In similar cases - particularly if we are dealing with numeric variables - we need to sample the set of all possible combinations in a way that guarantees an even coverage of search space.
+
+
+### Sampling at regular intervals
+
+An intuitive approach is to choose a fixed set of values for each (numerical) variable, and to generate a factorial set based on this smaller-sized selection of values.
+
+For example, let's assume that we have two numerical variables, _age_ and _income_, and that we want to create a synthetic dataset that includes combinations of age and covering all the ranges of these two variables. For each of these two variables, we can hand-pick values that we want to ensure will be included.
+
+The following code does this by using a regular sequence (e.g., taking ages from 1 to 131 years at intervals of 10 years). It can also be based on an observed distribution (e.g., here we sample income at each "decile" of the income distribution).
+
+```{r regular_sampling, fig.show = "hold", out.width = "50%"}
+set.seed(123)
+
+# Sampling age using a regular sequence:
+age <- seq(from = 1, to = 120, by = 10)
+
+# Sampling income based on a distribution (e.g.，a beta distribution):
+income <- quantile(
+  x = rbeta(n = 2000, shape1 = 6, shape2 = 3) * 1e4 ,# Synthetic income
+  probs = seq(from = 0, to = 1, by = 0.1)  # Finding each decile
+)
+
+# Now we can construct a factorial combination of these age and income levels.
+synthData <- expand.grid(
+  age = age,
+  income = income
+)
+
+# Let's compare what we obtained against a random distribution:
+plot( # regular sampling
+  x = synthData$age,
+  y = synthData$income,
+  xlab = "age (at 10-year intervals)",
+  ylab = "income (at decile intervals)",
+  main = "Sampling at regular intervals"
+) 
+plot( # random distribution with the same number of observations
+  x = round(rbeta(n = nrow(synthData), shape1 = 3, shape2 = 6) * 120),
+  y = rbeta(n = nrow(synthData), shape1 = 0.7, shape2 = 0.7),
+  xlab = "age",
+  ylab = "income",
+  main = "Random distribution"
+)
+
+```
+
+
+
+### Latin Hypercube Sampling (LHS)
+
+If a regular interval sampling looks to "artificial", another popular approach to covering the search space is to use some form of stratified sampling. In essence, we divide each numeric variable into non-overlapping intervals, and then we take one sample (at random uniform) from each of the intervals.
+
+For 2+ dimensions, like in our _age_ and _income_ example, there is an elegant algorithm that makes this easy: **Latin Hypercube Sampling** (fancy name, but a simple idea).
+
+```{r lhs, fig.show = "hold", out.width = "70%"}
+set.seed(123)
+
+# Creating a stratified sample from two variables
+lhs2D <- lhs::randomLHS(
+  n = 150, # number of observations we can make (aka, our sample size)
+  k = 2 # number of variables.
+) 
+
+# Scaling to match the actual range of our two variables
+synthData <- data.frame(
+  age = lhs2D[,1] * 131,
+  income = lhs2D[,2] * 1e4
+)
+
+
+# What we obtained:
+plot( # Latin hypercube sampling
+  x = synthData$age,
+  y = synthData$income,
+  xlab = "age",
+  ylab = "income",
+  main = "Latin Hypercube Sampling"
+) 
+
+```
+
+
+<span style="color: #32a852;">**Question**. LHS has been presented as a method to select a varied range of points in a multi-dimensional search space -- e.g., to generate synthetic "observations" for variables with a known range. A simpler approach could be to draw values from uniform distributions. So, why would we prefer LHS over a simpler, fully random draw?</span>
+
+
+
+### More on LHS
+
+LHS guarantees that observations will be evenly spread across the range of each variable, generally yielding an even coverage of the search space. By contrast, with uniform sampling, some variable levels will not be explored, whereas some others will be oversampled, resulting in observations being clustered in some regions of the search space, and entirely missing in some others.
+
+```{r lhs_vs_runif, fig.show = "hold", out.width = "100%"}
+set.seed(123)
+
+sampleSize <- 20 # Sample size (i.e., number of synthetic observations per sample)
+
+# Taking an LHS and crafting it into a data.frame
+lhs2D <- lhs::randomLHS(n = sampleSize, k = 2)
+synthDataLHS <- data.frame(
+  age = lhs2D[, 1] * 120,
+  income = lhs2D[, 2] * 1e4,
+  method = "Latin Hypercube Sampling"
+)
+
+# Now a uniform sample:
+synthDataUnif <- data.frame(
+  age = runif(sampleSize, min = 0, max = 120),
+  income = runif(sampleSize, min = 0, max = 1e4),
+  method = "Random uniform sampling"
+)
+
+# Merging into one data.frame for plotting:
+synthData <- rbind(synthDataLHS, synthDataUnif)
+rm(lhs2D, synthDataLHS, synthDataUnif)
+
+# And plotting.
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = age, y = income)
+) +
+  ggplot2::geom_point() + 
+  ggplot2::scale_x_continuous( # Adding reference lines to show the binning in LHS
+    limits = c(0, 120),
+    expand = c(0, 0),
+    breaks = seq(from = 0, to = 120, length.out = sampleSize + 1),
+    minor_breaks = NULL
+  ) +
+  ggplot2::scale_y_continuous(
+    limits = c(0, 1e4),
+    expand = c(0, 0),
+    breaks = seq(from = 0, to = 1e4, length.out = sampleSize + 1),
+    minor_breaks = NULL
+  ) +
+  ggplot2::facet_wrap(~method) +
+  ggplot2::labs(
+    title = "Search space coverage: LHS vs random uniform",
+    x = "Age",
+    y = "Income"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    panel.background = ggplot2::element_rect(fill = "gray95"),
+    axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+### A more playful approach
+
+When our use for synthetic data does not have any particular requirements concerning correlation between variables, or even coverage of variable range, we can afford to be playful. The following code shows an example of how to go about this, whilst making it very obvious that the generated data is synthetic.
+
+```{r image_masking_a, echo=FALSE}
+set.seed(123)
+
+# This is the text that we want to emerge from the scatterplot.
+# Notice the characters "\n": they will be interpreted as a line break.
+inputText <- "This is\nsynthetic\ndata :)" 
+sampleSize <- 2000 # Number of points / observations to be generated
+
+# Rendering the input text as an image using ggplot:
+inputTextImage <- ggplot2::ggplot(
+    data = data.frame(inputText = inputText),
+    mapping = ggplot2::aes(x = 1, y = 1, label = inputText)) +
+  ggplot2::geom_text(
+    size = 4,  # Font size may need to be manually adjusted to ensure all text fits
+    fontface = "bold"
+  ) +
+  ggplot2::theme_void() +
+  ggplot2::theme(
+    plot.background = ggplot2::element_blank(),
+    panel.background = ggplot2::element_blank(),
+    plot.margin = ggplot2::margin(0, 0, 0, 0)
+  )
+
+# Saving the text image as a temporary raster file (in this case, png).
+ggsave(
+  filename = "./inputTextImage.png", 
+  plot = inputTextImage, 
+  width = 300,
+  height = 200,
+  dpi = 300,
+  units = "px",
+  bg = "white"
+)
+
+# Let's read the image back as a matrix (raster), and delete the image file.
+raster <- png::readPNG("./inputTextImage.png")
+invisible( # The invisible() function just silences the console output.
+  file.remove("./inputTextImage.png")
+)
+  
+# Now, the raster we created is a 300 by 200 by 4 array. 300 and 200 are the
+# resolutions of our target X and Y variables. The third dimension, 4, is for
+# the four color channels of a typical png: RGBA. We use the RGB (color) channels
+# to create a final probability matrix:
+raster <- 1 - ((raster[,,1] + raster[,,2] + raster[,,3]) / 3)
+
+# Now let's create data point by sampling the raster.
+# We interpret raster values as probability weights. Let's transform probability
+gridCoords <- expand.grid(
+  y = seq_len(nrow(raster)),
+  x = seq_len(ncol(raster))
+)
+probWeights <- as.vector(raster)
+
+# Sample row indices from the grid based on the matrix probability weights
+sampledIndices <- sample(
+  x = seq_len(nrow(gridCoords)),
+  size = sampleSize,
+  replace = TRUE,
+  prob = probWeights
+)
+
+# Extracting the sampled coordinates
+synthData <- transform(
+  gridCoords[sampledIndices, ],
+  y = ncol(raster) - y + 1 # Flipping the y axis to correct orientation
+ )
+
+# And we may now plot:
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = x, y = y)
+) +
+  geom_point()
+
+```
+
+This is achieved by creating a small, temporary image file (technically, a raster image) whose only content is some arbitrary text. The image is then re-imported as a matrix, where white pixels represent 0 and black pixels 1. The matrix is used as a 2D probablity distribution from which to draw synthetic data points.
+
+When our synthetic data points are plotted as a scatterplot, they will be clustered on the plot in a way that shows the original input text.
+
+```{r image_masking_b, out.width = "50%"}
+set.seed(123)
+
+# This is the text that we want to emerge from the scatterplot.
+# Notice the characters "\n": they will be interpreted as a line break.
+inputText <- "This is\nsynthetic\ndata :)" 
+sampleSize <- 2000 # Number of points / observations to be generated
+
+# Rendering the input text as an image using ggplot:
+inputTextImage <- ggplot2::ggplot(
+    data = data.frame(inputText = inputText),
+    mapping = ggplot2::aes(x = 1, y = 1, label = inputText)) +
+  ggplot2::geom_text(
+    size = 4,  # Font size may need to be manually adjusted to ensure all text fits
+    fontface = "bold"
+  ) +
+  ggplot2::theme_void() +
+  ggplot2::theme(
+    plot.background = ggplot2::element_blank(),
+    panel.background = ggplot2::element_blank(),
+    plot.margin = ggplot2::margin(0, 0, 0, 0)
+  )
+
+print(inputTextImage)
+
+# Saving the text image as a temporary raster file (in this case, png).
+ggsave(
+  filename = "./inputTextImage.png", 
+  plot = inputTextImage, 
+  width = 300,
+  height = 200,
+  dpi = 300,
+  units = "px",
+  bg = "white"
+)
+
+# Let's read the image back as a matrix (raster), and delete the image file.
+raster <- png::readPNG("./inputTextImage.png")
+invisible( # The invisible() function just silences the console output.
+  file.remove("./inputTextImage.png")
+)
+  
+# Now, the raster we created is a 300 by 200 by 4 array. 300 and 200 are the
+# resolutions of our target X and Y variables. The third dimension, 4, is for
+# the four color channels of a typical png: RGBA. We use the RGB (color) channels
+# to create a final probability matrix:
+raster <- 1 - ((raster[,,1] + raster[,,2] + raster[,,3]) / 3)
+
+# We can already plot the resulting matrix:
+image(raster)
+
+# Now let's create data point by sampling the raster.
+# We interpret raster values as probability weights. Let's transform probability
+gridCoords <- expand.grid(
+  y = seq_len(nrow(raster)),
+  x = seq_len(ncol(raster))
+)
+probWeights <- as.vector(raster)
+
+# Sample row indices from the grid based on the matrix probability weights
+sampledIndices <- sample(
+  x = seq_len(nrow(gridCoords)),
+  size = sampleSize,
+  replace = TRUE,
+  prob = probWeights
+)
+
+# Extracting the sampled coordinates
+synthData <- transform(
+  gridCoords[sampledIndices, ],
+  y = ncol(raster) - y + 1 # Flipping the y axis to correct orientation
+ )
+
+# And we may now plot:
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = x, y = y)
+) +
+  geom_point()
+
+```
+
+
+
+
+
+
+
+## Smooth series  
+
+At times, we need a synthetic variable that doesn't jump around from observation to observation, but that changes more subtly.
+
+The best example are time series. Take this naively constructed time series:
+
+```{r smooth_1}
+set.seed(123)
+
+synthData <- data.frame(
+  year = 1850:2026,
+  measurement = rnorm(n = length(1850:2026), mean = 100, sd = 50)
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = year, y = measurement)
+) + 
+  ggplot2::geom_line() +
+  ggplot2::labs(title = "Gaussian noise")
+```
+
+The natural processes we study are typically not as erratic; rather, they feature some degree of autocorrelation: each observation correlates to the other observations before and after it. This is generally true for phenomena that we measure by taking measurements that are close in space and/or time -- e.g., windspeed along a coastline, soil pH across our garden, a person's weight throughout their lifetime, etc.
+
+There are various approaches to generating variables with these characteristics -- which one is the most preferable depends on the degree of realism needed for our synthetic dataset.
+
+### Sine waves
+
+An **easy** approach is to sample a sine wave with a frequency that spans our data a few times -- but not too many.
+
+
+```{r smooth_2}
+set.seed(123)
+
+synthData <- data.frame(
+  year = 1850:2026,
+  measurement = sin(seq(from = 0, to = 3 * pi, length.out = length(1850:2026)))
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = year, y = measurement)
+) + 
+  ggplot2::geom_line() +
+  ggplot2::labs(title = "Smooth transition through a sine wave")
+```
+
+This approach is the easiest to write and is fast to calculate. However, the resulting time series looks very artificial.
+
+
+### Random walks
+
+In cases where more realism may be welcome, some prefer to generate smooth sequences through a **random walk** -- a concept related to **Brownian noise**. This consist in starting with an arbitrary value for the first observation of the sequence -- in the following example, zero. Then, the second observation is calculated by adding some random noise to the previous one. This is done iteratively for all observations.
+
+
+```{r smooth_3}
+set.seed(123)
+
+synthData <- data.frame(
+  year = 1850:2026,
+  measurement = cumsum(rnorm(n = length(1850:2026), mean = 0, sd = 0.03))
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = year, y = measurement)
+) + 
+  ggplot2::geom_line() +
+  ggplot2::labs(title = "Smooth transitions through random walk")
+```
+
+Random walks can of course be extended to work in higher dimensions. In the following example, random walks are used to populate two variables, _x_ and _y_. These two variables could represent coordinates in space, and the path we're tracing could be the movement of an entity - a person, an animal - over time.
+
+<span style="color: #32a852;">**Task**. Can you modify the code above reproduce random walk in 2D space such as in the following plot? </span>
+
+```{r smooth_3b, echo=FALSE}
+set.seed(123)
+
+synthData <- data.frame(
+  time = 1:500,
+  x = cumsum(rnorm(n = 500, mean = 0, sd = 0.03)),
+  y = cumsum(rnorm(n = 500, mean = 0, sd = 0.03))
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = x, y = y, color = time)
+) + 
+  ggplot2::geom_path() +
+  ggplot2::labs(title = "Smooth transitions through random walk in 2D")
+```
+
+
+
+The resulting series look much more realistic than what can be obtained from sine waves. However, it should be noted, this approach is somewhat more computationally demanding. With very long sequences and higher-dimensional spaces, this may be a bottleneck. Another limitation lies in the fact that random walks are designed to "wander off": the range of variation of a random walk changes as function of the length of the sequence, making this approach less suitable for generating smooth sequences of varying lengths.
+
+
+
+### Simplex noise
+
+Simplex noise is a type of gradient noise that generates smooth, organic patterns. It was developed - and still is largely used - for computer graphics, as it can be used to simulate highly realistic terrain, clouds, and various material textures.
+Simplex noise has a finite range [-1,1], making it more versatile than random walks.
+
+The downside is that its implementation is not trivial. We will therefore relying on the library _ambient_, which has an efficient implementation of simplex noise (and many other cool generative algorithms!).
+
+
+```{r smooth_4}
+set.seed(123)
+
+synthData <- data.frame(
+  year = 1850:2026,
+  measurement = c(ambient::noise_simplex(
+    dim = c(1, length(1850:2026)),
+    frequency = 0.005, # Higher values result in more large scale "swings". 
+    octaves = 5, # Higher values result in more smaller scale variations.
+    gain = 0.5
+  ))
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = year, y = measurement)
+) + 
+  ggplot2::geom_line() +
+  ggplot2::labs(title = "Smooth transitions through simplex noise")
+```
+
+Simplex noise is particularly well-suited for higher dimensional noise. Here is a 2D extension, where we generate a trajectory on the _x_ and _y_ plane.
+
+```{r smooth_5}
+set.seed(123)
+
+synthData <- data.frame(
+  time = 1:500,
+  x = c(ambient::noise_simplex(dim = c(1, 500), frequency = 0.005)),
+  y = c(ambient::noise_simplex(dim = c(1, 500), frequency = 0.005))
+)
+
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = x, y = y, color = time)
+) + 
+  ggplot2::geom_path() +
+  ggplot2::labs(title = "Smooth transitions through simplex noise in 2D")
+```
+
+In the example above, 'movement' was obtained by generating simplex noise independently for _x_ and _y_. We can obtain other realistic data patterns by generating directly a 2-dimensional simplex noise, where _x_ and _y_ are not independent. This is particularly handy for generating textures, e.g., synthetic terrain (elevation map), or heatmaps.
+
+
+
+```{r smooth_6}
+set.seed(123)
+
+synthMatrix <- ambient::noise_simplex(
+    dim = c(100, 100), # How many rows and how many columns we need to populate
+    frequency = 0.005, # Higher values result in more large scale "swings". 
+    octaves = 5, # Higher values result in more smaller scale variations.
+    gain = 0.5
+  )
+
+# Converting matrix into a data.frame:
+synthData <- transform(
+  expand.grid(x = 1:100, y = 1:100),
+  value = as.vector(synthMatrix)
+)
+
+# Plotting a heatmap using a terrain-like color palette.
+ggplot2::ggplot(
+  data = synthData,
+  mapping = ggplot2::aes(x = x, y = y, fill = value)
+) + 
+  ggplot2::geom_tile() +
+  ggplot2::labs(title = "2D simplex noise") +
+  ggplot2::scale_fill_gradientn(
+    colors = c("#08306b", "#2171b5", "#f7fcb9", "#41ab5d", "#c7e9c0", "#ffffff")
+  ) + 
+  ggplot2::theme_void()
+
+```
+
+
+
+
+
+
